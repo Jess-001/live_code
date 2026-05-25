@@ -302,24 +302,21 @@ function Home() {
 // Injects a <style> tag for each remote user's cursor color
 function injectCursorStyle(socketId, color) {
   const styleId = `cursor-style-${socketId}`;
-  if (document.getElementById(styleId)) return; // already injected
+  // Always update in case color changed
+  const existing = document.getElementById(styleId);
+  if (existing) existing.remove();
 
   const style = document.createElement("style");
   style.id = styleId;
   style.textContent = `
-    .remote-cursor-${socketId}::before {
-      content: '';
-      display: inline-block;
-      width: 2px;
-      height: 18px;
-      background: ${color};
-      margin-right: 1px;
-      vertical-align: text-bottom;
-      animation: cursor-blink 1s ease-in-out infinite;
+    .remote-cursor-${socketId} {
+      border-left: 2px solid ${color} !important;
+      margin-left: -1px;
+      animation: cursor-blink-${socketId} 1s ease-in-out infinite;
     }
-    @keyframes cursor-blink {
+    @keyframes cursor-blink-${socketId} {
       0%, 100% { opacity: 1; }
-      50% { opacity: 0; }
+      50% { opacity: 0.2; }
     }
   `;
   document.head.appendChild(style);
@@ -339,19 +336,22 @@ function EditorPage() {
   const [code, setCode] = useState("");
   const [output, setOutput] = useState([]);
   const [socket, setSocket] = useState(null);
+  const socketRef = useRef(null); // always up-to-date ref for onMount closures
   const [language, setLanguage] = useState("javascript");
   const [running, setRunning] = useState(false);
   const [connected, setConnected] = useState(false);
   const outputRef = useRef(null);
   const editorRef = useRef(null);
   const monacoRef = useRef(null);
-  const decorationsRef = useRef([]);
+  const cursorsRef = useRef({});
 
   // Socket
   useEffect(() => {
     const s = io("http://localhost:5000");
     s.on("connect", () => setConnected(true));
     s.on("disconnect", () => setConnected(false));
+    socketRef.current = s;
+    window.__socket = s;
     setSocket(s);
     return () => s.disconnect();
   }, []);
@@ -380,14 +380,31 @@ function EditorPage() {
   }, [output]);
 
   // Lang sync
-  const langHansdler=({language})=>setLanguage(language);
+  const langHandler = ({ language }) => setLanguage(language);
   useEffect(() => {
     if (!socket) return;
-    socket.on("language_update", langHandler => {
-      setLanguage(language);
-    });
-    return () => socket.off("language_update",langHandler);
+    const handler = (data) => setLanguage(data.language);
+    socket.on("language_update", handler);
+    return () => socket.off("language_update", handler);
   }, [socket]);
+
+  // Helper: reposition a label given current scroll state
+  const repositionLabel = (socketId, position, editor, monaco) => {
+    const labelEl = document.getElementById(`cursor-label-${socketId}`);
+    if (!labelEl || !editor || !monaco) return;
+    const lineHeight = editor.getOption(monaco.editor.EditorOption.lineHeight);
+    const scrollTop = editor.getScrollTop();
+    const scrollLeft = editor.getScrollLeft();
+    const layoutInfo = editor.getLayoutInfo();
+    // Approx char width for JetBrains Mono 14px
+    const charWidth = 8.4;
+    const top = (position.lineNumber - 1) * lineHeight - scrollTop - 20;
+    const left = layoutInfo.contentLeft + (position.column - 1) * charWidth - scrollLeft;
+    labelEl.style.top = `${Math.max(0, top)}px`;
+    labelEl.style.left = `${Math.max(layoutInfo.contentLeft, left)}px`;
+    // Hide label if it scrolled above viewport
+    labelEl.style.display = top < -20 ? "none" : "block";
+  };
 
   // Live cursor
   useEffect(() => {
@@ -406,7 +423,7 @@ function EditorPage() {
           position.lineNumber, position.column
         ),
         options: {
-          beforeContentClassName: `remote-cursor-${socketId}`,
+          className: `remote-cursor-${socketId}`,
         },
       }]
     );
@@ -427,9 +444,8 @@ function EditorPage() {
         pointer-events: none;
         z-index: 100;
         white-space: nowrap;
-        transition: top 0.1s ease, left 0.1s ease;
+        transition: top 0.08s ease, left 0.08s ease;
       `;
-      // ✅ Only append if editor DOM exists
       if (editor.getDomNode()) {
         editor.getDomNode().appendChild(labelEl);
       }
@@ -439,17 +455,15 @@ function EditorPage() {
     labelEl.style.background = color;
     labelEl.style.color = "#000";
 
-    const lineHeight = editor.getOption(monaco.editor.EditorOption.lineHeight);
-    const scrollTop = editor.getScrollTop();
-    const scrollLeft = editor.getScrollLeft();
-    const layoutInfo = editor.getLayoutInfo();
-    const top = (position.lineNumber - 1) * lineHeight - scrollTop - 20;
-    const left = layoutInfo.contentLeft + (position.column - 1) * 7.8 - scrollLeft;
+    // Store position so scroll handler can reuse it
+    cursorsRef.current[socketId] = {
+      decorations: newDecorations,
+      position,
+      name,
+      color,
+    };
 
-    labelEl.style.top = `${Math.max(0, top)}px`;
-    labelEl.style.left = `${Math.max(layoutInfo.contentLeft, left)}px`;
-
-    cursorsRef.current[socketId] = { decorations: newDecorations };
+    repositionLabel(socketId, position, editor, monaco);
   };
 
   const handleCursorRemove = ({ socketId }) => {
@@ -468,17 +482,16 @@ function EditorPage() {
   socket.on("cursor_update", handleCursorUpdate);
   socket.on("cursor_remove", handleCursorRemove);
 
-  // ✅ Proper cleanup — removes exactly these handlers
   return () => {
     socket.off("cursor_update", handleCursorUpdate);
     socket.off("cursor_remove", handleCursorRemove);
   };
-}, [socket]); // ← socket only, no missing deps
+}, [socket]);
 
   // Output sync
   useEffect(() => {
     if (!socket) return;
-    socket.on("code_output", ({ output }) => {
+    const handleOutput = ({ output }) => {
       const lines = (output || "").split("\n").filter(Boolean);
       setOutput(prev => [
         ...prev,
@@ -486,9 +499,10 @@ function EditorPage() {
         { type: "meta", text: "✓ finished" },
       ]);
       setRunning(false);
-    });
-    return () => socket.off("code_output");
-  }, [socket, language]);
+    };
+    socket.on("code_output", handleOutput);
+    return () => socket.off("code_output", handleOutput);
+  }, [socket]);
 
   // ✅ FIX: Early returns AFTER all hooks
   if (isLoading) {
@@ -648,13 +662,18 @@ function EditorPage() {
                   editorRef.current = editor;
                   monacoRef.current = monaco;
                   editor.onDidChangeCursorPosition((e) => {
-                    if (!socket) return;
-                    socket.emit("cursor_move", { roomId, position: e.position });
+                    // Use socketRef.current — never stale, unlike the socket state variable
+                    const s = socketRef.current;
+                    if (!s) return;
+                    s.emit("cursor_move", { roomId, position: e.position });
                   });
                   editor.onDidScrollChange(() => {
-  // Re-trigger a cursor_move so positions recalculate
-  // This is handled automatically since labels reposition on every cursor_update
-});
+                    Object.entries(cursorsRef.current).forEach(([socketId, data]) => {
+                      if (data?.position) {
+                        repositionLabel(socketId, data.position, editor, monaco);
+                      }
+                    });
+                  });
                 }}
                 theme="vs-dark"
                 height="100%"
