@@ -350,13 +350,18 @@ function EditorPage() {
 
   useEffect(() => {
     const s = io(BACKEND_URL);
-    s.on("connect", () => setConnected(true));
+    s.on("connect", () => {
+      setConnected(true);
+      if (roomId) {
+        s.emit("join_room", { roomId, userName: user?.name || "Anonymous" });
+      }
+    });
     s.on("disconnect", () => setConnected(false));
     socketRef.current = s;
     window.__socket = s;
     setSocket(s);
     return () => s.disconnect();
-  }, []);
+  }, [roomId, user]);
 
   // Join room + load
   useEffect(() => {
@@ -366,7 +371,7 @@ function EditorPage() {
       .then(r => r.json())
       .then(d => { if (d?.code) setCode(d.code); })
       .catch(console.error);
-  }, [socket, roomId,user]);
+  }, [socket, roomId, user]);
 
   // Listen updates
   useEffect(() => {
@@ -697,7 +702,8 @@ function EditorPage() {
                 onChange={value => {
                   const newCode = value || "";
                   setCode(newCode);
-                  if (socket) socket.emit("code_change", { roomId, code: newCode });
+                  const s = socketRef.current || socket;
+                  if (s) s.emit("code_change", { roomId, code: newCode });
                 }}
               />
             </div>

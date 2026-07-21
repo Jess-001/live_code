@@ -54,9 +54,16 @@ io.on("connection", (socket) => {
 
   // ── Cursor move ────────────────────────────────────────────────────────────
   socket.on("cursor_move", ({ roomId, position }) => {
-    const user = roomUsers[roomId]?.[socket.id];
-    if (!user) return; // user not registered yet, skip
-
+    if (!roomId || !position) return;
+    if (!roomUsers[roomId]) roomUsers[roomId] = {};
+    if (!roomUsers[roomId][socket.id]) {
+      const colorIndex = Object.keys(roomUsers[roomId]).length % USER_COLORS.length;
+      roomUsers[roomId][socket.id] = {
+        name: "Collaborator",
+        color: USER_COLORS[colorIndex],
+      };
+    }
+    const user = roomUsers[roomId][socket.id];
     socket.to(roomId).emit("cursor_update", {
       socketId: socket.id,
       position,
