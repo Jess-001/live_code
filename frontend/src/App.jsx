@@ -346,8 +346,10 @@ function EditorPage() {
   const cursorsRef = useRef({});
 
   // Socket
+  const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:5000";
+
   useEffect(() => {
-    const s = io("http://localhost:5000");
+    const s = io(BACKEND_URL);
     s.on("connect", () => setConnected(true));
     s.on("disconnect", () => setConnected(false));
     socketRef.current = s;
@@ -360,7 +362,7 @@ function EditorPage() {
   useEffect(() => {
     if (!socket || !roomId) return;
     socket.emit("join_room", { roomId, userName: user?.name || "Anonymous" });
-    fetch(`http://localhost:5000/room/${roomId}`)
+    fetch(`${BACKEND_URL}/room/${roomId}`)
       .then(r => r.json())
       .then(d => { if (d?.code) setCode(d.code); })
       .catch(console.error);
