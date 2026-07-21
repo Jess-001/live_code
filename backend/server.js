@@ -45,7 +45,11 @@ io.on("connection", (socket) => {
   // ── Code change ────────────────────────────────────────────────────────────
   socket.on("code_change", async ({ roomId, code }) => {
     socket.to(roomId).emit("code_update", code);
-    await Room.findOneAndUpdate({ roomId }, { code }, { upsert: true });
+    try {
+      await Room.findOneAndUpdate({ roomId }, { code }, { upsert: true });
+    } catch (err) {
+      console.error("Error saving room code to MongoDB:", err.message);
+    }
   });
 
   // ── Cursor move ────────────────────────────────────────────────────────────
@@ -109,31 +113,40 @@ io.on("connection", (socket) => {
 app.get("/", (req, res) => res.send("Backend is running 🚀"));
 
 app.get("/room/:id", async (req, res) => {
-  const room = await Room.findOne({ roomId: req.params.id });
-  res.json(room || { code: "" });
+  try {
+    const room = await Room.findOne({ roomId: req.params.id });
+    res.json(room || { code: "" });
+  } catch (err) {
+    res.json({ code: "" });
+  }
 });
 
 app.post("/run", async (req, res) => {
-  const { code, language } = req.body;
-  const response = await fetch(
-    "https://ce.judge0.com/submissions?base64_encoded=false&wait=true",
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        source_code: code,
-        language_id: language === "python" ? 71 : 63,
-      }),
-    }
-  );
-  const data = await response.json();
-  res.json({ output: data.stdout || data.stderr || data.compile_output });
+  try {
+    const { code, language } = req.body;
+    const response = await fetch(
+      "https://ce.judge0.com/submissions?base64_encoded=false&wait=true",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_code: code,
+          language_id: language === "python" ? 71 : 63,
+        }),
+      }
+    );
+    const data = await response.json();
+    res.json({ output: data.stdout || data.stderr || data.compile_output || "No output" });
+  } catch (err) {
+    res.status(500).json({ output: "Error running code: " + err.message });
+  }
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
-server.listen(5000, () => console.log("Server running on port 5000"));
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
-mongoose
-  .connect("mongodb://127.0.0.1:27017/codeapp")
+const MONGO_URI = process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/codeapp";
+mongoose.connect(MONGO_URI)
   .then(() => console.log("MongoDB connected"))
   .catch((err) => console.log(err));
